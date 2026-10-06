@@ -1,0 +1,189 @@
+# ============================================================
+# GitHub Actions — Advanced Triggers & Concurrency
+# ============================================================
+
+
+# ============================================================
+# CONCURRENCY
+# ============================================================
+# Controls parallel execution of workflow runs.
+# Same group name = only one run at a time.
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+# Workflow-level concurrency
+concurrency:
+  group: deploy-${{ github.ref }}
+  # If a new run starts while one is in progress:
+  #   cancel-in-progress: true  → cancel the old one
+  #   cancel-in-progress: false → queue the new one (default)
+  cancel-in-progress: true
+
+# Common patterns:
+#   group: ci-${{ github.ref }}
+#     → one CI run per branch (new push cancels old)
+#
+#   group: deploy-production
+#     → only one production deploy at a time
+#
+#   group: pr-${{ github.event.pull_request.number }}
+#     → one run per PR
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    # Job-level concurrency (overrides workflow-level for this job)
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false # queue, don't cancel deploys
+
+    steps:
+      - run: echo "Deploying..."
+
+
+# ============================================================
+# WORKFLOW_RUN — Chain Workflows
+# ============================================================
+# Triggers when ANOTHER workflow completes.
+# Runs in the context of the DEFAULT branch (main),
+# not the PR branch. This gives it elevated permissions.
+
+# Use case: Workflow A runs tests on a PR (limited permissions).
+# Workflow B (triggered by workflow_run) posts results,
+# adds labels, or deploys — things that need write access.
+
+# File: .github/workflows/post-results.yml
+
+# name: Post Test Results
+#
+# on:
+#   workflow_run:
+#     workflows: ["CI Tests"]   # name of the triggering workflow
+#     types: [completed]        # completed | requested
+#     branches: [main]          # optional branch filter
+#
+# jobs:
+#   post:
+#     runs-on: ubuntu-latest
+#     if: github.event.workflow_run.conclusion == 'success'
+#     # Other conclusions: failure, cancelled, skipped
+#
+#     steps:
+#       - name: Download artifact from triggering workflow
+#         uses: actions/download-artifact@v4
+#         with:
+#           # v4 can download artifacts from other workflow runs
+#           run-id: ${{ github.event.workflow_run.id }}
+#           name: test-results
+#           github-token: ${{ secrets.GITHUB_TOKEN }}
+#
+#       - name: Post results
+#         run: echo "Processing test results..."
+#
+#       # Available context:
+#       #   github.event.workflow_run.id
+#       #   github.event.workflow_run.name
+#       #   github.event.workflow_run.conclusion
+#       #   github.event.workflow_run.head_branch
+#       #   github.event.workflow_run.head_sha
+#       #   github.event.workflow_run.event  (what triggered the original)
+
+
+# ============================================================
+# REPOSITORY_DISPATCH — External Triggers
+# ============================================================
+# Trigger a workflow from outside GitHub via API call.
+
+# File: .github/workflows/external-deploy.yml
+
+# name: External Deploy
+#
+# on:
+#   repository_dispatch:
+#     types: [deploy, rollback]  # custom event types you define
+#
+# jobs:
+#   handle:
+#     runs-on: ubuntu-latest
+#     steps:
+#       - name: Handle event
+#         run: |
+#           echo "Event type: ${{ github.event.action }}"
+#           echo "Payload: ${{ toJSON(github.event.client_payload) }}"
+
+# Trigger it with:
+#
+#   curl -X POST \
+#     -H "Authorization: token $GITHUB_TOKEN" \
+#     -H "Accept: application/vnd.github.v3+json" \
+#     https://api.github.com/repos/OWNER/REPO/dispatches \
+#     -d '{
+#       "event_type": "deploy",
+#       "client_payload": {
+#         "environment": "production",
+#         "version": "2.1.0",
+#         "triggered_by": "external-ci"
+#       }
+#     }'
+#
+# Use cases:
+#   - Cross-repo triggering (repo A deploys, then triggers repo B)
+#   - External CI/CD systems triggering GitHub workflows
+#   - ChatOps (Slack bot triggers deploy)
+#   - Webhook from monitoring (auto-rollback on alert)
+
+
+# ============================================================
+# SCHEDULE EDGE CASES
+# ============================================================
+
+# Schedule runs only on the default branch.
+# Cron is in UTC. Minimum interval: 5 minutes (but GitHub may delay).
+# Scheduled runs can be delayed by up to 15-60 minutes during peak load.
+# If the repo has no activity for 60 days, scheduled workflows are disabled.
+
+# Multiple schedules:
+# on:
+#   schedule:
+#     - cron: "0 6 * * 1-5"   # weekdays at 6 AM UTC
+#     - cron: "0 12 * * 0"    # Sunday at noon UTC
+
+
+# ============================================================
+# EVENT FILTERS SUMMARY
+# ============================================================
+
+# on:
+#   push:
+#     branches: [main, release/*]     # glob patterns
+#     branches-ignore: [temp/*]       # cannot mix with branches
+#     tags: [v*]
+#     tags-ignore: [v*-rc*]
+#     paths: [src/**, package.json]   # only trigger if these change
+#     paths-ignore: [docs/**]         # cannot mix with paths
+#
+#   pull_request:
+#     branches: [main]
+#     types:                          # default: opened, synchronize, reopened
+#       - opened
+#       - closed
+#       - labeled
+#       - ready_for_review
+#
+#   issues:
+#     types: [opened, labeled, assigned]
+#
+#   issue_comment:
+#     types: [created]
+#     # Common pattern: ChatOps-style commands
+#     # if: contains(github.event.comment.body, '/deploy')
+#
+#   release:
+#     types: [published, prereleased]
+#
+#   workflow_dispatch: {}  # no inputs, just manual trigger button

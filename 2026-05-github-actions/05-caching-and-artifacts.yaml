@@ -1,0 +1,157 @@
+# ============================================================
+# GitHub Actions — Caching & Artifacts
+# ============================================================
+# Cache: speed up workflows by reusing files between runs.
+# Artifacts: share files between jobs or preserve build outputs.
+
+
+name: Cache & Artifacts Demo
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+
+  # --- CACHING ---
+
+  cached_build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Many setup actions have built-in caching:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          # Automatically caches ~/.npm based on package-lock.json
+
+      - run: npm ci
+      - run: npm run build
+
+  # Manual cache control for more complex scenarios:
+  manual_cache:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache node_modules
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: node-modules-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          # restore-keys: fallback keys if exact match not found
+          restore-keys: |
+            node-modules-${{ runner.os }}-
+
+      # Skip install if cache hit
+      - name: Install dependencies
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - run: npm test
+
+  # Cache behavior:
+  #   - Cache is immutable — same key = same content forever
+  #   - Shared across branches: PR can read cache from main
+  #   - Max 10 GB per repo, LRU eviction
+  #   - Entries expire after 7 days without access
+  #
+  # Good cache keys use hashFiles() on lock files:
+  #   key: npm-${{ hashFiles('package-lock.json') }}
+  #   key: pip-${{ hashFiles('requirements.txt') }}
+  #   key: go-${{ hashFiles('go.sum') }}
+
+
+  # --- ARTIFACTS ---
+  # Artifacts upload files from one job and download in another.
+  # Unlike cache, artifacts are tied to a specific workflow run.
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm ci && npm run build
+
+      - name: Upload build output
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: dist/
+          retention-days: 5 # default 90, max depends on plan
+          # if-no-files-found: error  # error | warn | ignore
+
+  test_e2e:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download build output
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: dist/
+
+      - run: npx playwright test
+
+      # Upload test results even on failure
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [build, test_e2e]
+    steps:
+      - name: Download build
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: dist/
+
+      - run: echo "Deploying dist/..."
+
+
+  # --- PASSING DATA BETWEEN JOBS ---
+  # Small values: use job outputs (see 02-expressions.yaml)
+  # Files: use artifacts (shown above)
+
+  # For many artifacts, download all at once:
+  # - uses: actions/download-artifact@v4
+  #   with:
+  #     path: all-artifacts/
+  #     # Downloads ALL artifacts into subdirectories
+  #     # all-artifacts/build-output/...
+  #     # all-artifacts/playwright-report/...
+
+  # Artifact v4 changes (from v3):
+  #   - Each artifact name must be unique within a run
+  #   - Artifacts are immutable (can't overwrite)
+  #   - Upload/download is faster (parallel, compressed)
+  #   - merge-multiple: true allows combining separate uploads
+  #     into one artifact name
+
+
+  # --- CACHE vs ARTIFACT ---
+  #
+  # Cache:
+  #   - Reuse across runs (speed optimization)
+  #   - Key-based lookup (like a hash map)
+  #   - Shared between branches
+  #   - Evicted by LRU / 7 days / 10 GB limit
+  #   - Use for: node_modules, pip packages, build caches
+  #
+  # Artifact:
+  #   - Share within one run, between jobs
+  #   - Name-based (like a file share)
+  #   - Tied to specific workflow run
+  #   - Retention: 1-90 days (configurable)
+  #   - Use for: build outputs, test reports, binaries
+  #   - Downloadable from the Actions UI

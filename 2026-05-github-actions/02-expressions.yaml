@@ -1,0 +1,173 @@
+# ============================================================
+# GitHub Actions Expressions — Contexts, Functions, Conditionals
+# ============================================================
+# Expressions use ${{ }} syntax and are evaluated at runtime.
+
+
+name: Expressions Demo
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  APP_NAME: myapp
+
+jobs:
+  expressions:
+    runs-on: ubuntu-latest
+    steps:
+
+      # --- CONTEXTS ---
+      # Contexts are objects containing runtime information.
+
+      - name: GitHub context
+        run: |
+          echo "Event: ${{ github.event_name }}"
+          echo "Repo: ${{ github.repository }}"
+          echo "Branch: ${{ github.ref }}"
+          echo "SHA: ${{ github.sha }}"
+          echo "Actor: ${{ github.actor }}"
+          echo "Run ID: ${{ github.run_id }}"
+          echo "Run number: ${{ github.run_number }}"
+          echo "Workflow: ${{ github.workflow }}"
+
+      - name: Runner context
+        run: |
+          echo "OS: ${{ runner.os }}"
+          echo "Arch: ${{ runner.arch }}"
+          echo "Temp: ${{ runner.temp }}"
+
+      # All contexts:
+      #   github   — event payload, repo info, refs, actor
+      #   env      — environment variables
+      #   vars     — repository/org variables (plaintext config)
+      #   secrets  — encrypted secrets
+      #   job      — current job info
+      #   steps    — outputs from previous steps (steps.<id>.outputs.<name>)
+      #   matrix   — current matrix values
+      #   needs    — outputs/results from dependency jobs
+      #   runner   — runner machine info
+      #   inputs   — workflow_dispatch or workflow_call inputs
+
+
+      # --- CONDITIONALS (if) ---
+      # Works on both job and step level.
+
+      - name: Only on push to main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: echo "This is a push to main"
+
+      - name: Only on PR
+        if: github.event_name == 'pull_request'
+        run: echo "This is a PR"
+
+      - name: Skip for dependabot
+        if: github.actor != 'dependabot[bot]'
+        run: echo "Not dependabot"
+
+      # Status check functions — useful for cleanup/notification steps
+      - name: Always run (even on failure)
+        if: always()
+        run: echo "Cleanup step"
+
+      - name: Run only on failure
+        if: failure()
+        run: echo "Something failed above"
+
+      - name: Run only on cancel
+        if: cancelled()
+        run: echo "Workflow was cancelled"
+
+      # NOTE: without if: always(), steps after a failure are skipped.
+      # success() is the implicit default condition.
+
+
+      # --- STEP OUTPUTS ---
+      # Steps communicate through outputs.
+
+      - name: Generate value
+        id: gen # id is required to reference this step
+        run: |
+          echo "version=1.2.3" >> $GITHUB_OUTPUT
+          echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Use value
+        run: |
+          echo "Version: ${{ steps.gen.outputs.version }}"
+          echo "Short SHA: ${{ steps.gen.outputs.sha_short }}"
+
+      # Conditional based on step output
+      - name: Check version
+        if: steps.gen.outputs.version == '1.2.3'
+        run: echo "Expected version"
+
+
+      # --- BUILT-IN FUNCTIONS ---
+
+      # String functions
+      - name: String functions
+        if: |
+          contains(github.event.head_commit.message, '[skip ci]') == false
+          && startsWith(github.ref, 'refs/tags/')
+          && endsWith(github.repository, '-app')
+        run: echo "All conditions met"
+
+      # format() — string interpolation
+      - name: Format
+        run: echo "${{ format('Hello {0}, run #{1}', github.actor, github.run_number) }}"
+
+      # toJSON / fromJSON — serialize/deserialize
+      - name: Debug full event
+        run: echo '${{ toJSON(github.event) }}'
+
+      # hashFiles() — deterministic hash, typically for cache keys
+      - name: Show hash
+        run: echo "${{ hashFiles('**/package-lock.json') }}"
+
+
+  # --- JOB OUTPUTS ---
+  # Jobs pass data to downstream jobs through outputs.
+
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      build_version: ${{ steps.ver.outputs.version }}
+      image_tag: ${{ steps.ver.outputs.tag }}
+    steps:
+      - id: ver
+        run: |
+          echo "version=2.0.0" >> $GITHUB_OUTPUT
+          echo "tag=myapp:2.0.0" >> $GITHUB_OUTPUT
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Use build outputs
+        run: |
+          echo "Deploying version ${{ needs.build.outputs.build_version }}"
+          echo "Image: ${{ needs.build.outputs.image_tag }}"
+
+      # Check result of dependency job
+      - name: Check build result
+        if: needs.build.result == 'success'
+        run: echo "Build succeeded"
+
+
+  # --- JOB-LEVEL CONDITIONALS ---
+
+  notify:
+    runs-on: ubuntu-latest
+    needs: [build, deploy]
+    if: always() && needs.deploy.result == 'failure'
+    steps:
+      - run: echo "Deploy failed, sending notification"
+
+  release:
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - run: echo "Tagged release"

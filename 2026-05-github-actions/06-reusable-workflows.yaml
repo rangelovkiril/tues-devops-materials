@@ -1,0 +1,199 @@
+# ============================================================
+# GitHub Actions — Reusable Workflows & Composite Actions
+# ============================================================
+# Two ways to share logic: reusable workflows (workflow_call)
+# and composite actions. Different scopes, different use cases.
+
+
+# ============================================================
+# REUSABLE WORKFLOWS
+# ============================================================
+# A workflow that other workflows can call like a function.
+# Lives in .github/workflows/ like any other workflow.
+# Triggered by workflow_call instead of push/pr/etc.
+
+# --- DEFINING a reusable workflow ---
+# File: .github/workflows/deploy-reusable.yml
+
+name: Reusable Deploy
+
+on:
+  workflow_call:
+    # Inputs — parameters the caller passes in
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        type: string # string | boolean | number
+      image_tag:
+        description: "Docker image tag"
+        required: true
+        type: string
+      dry_run:
+        description: "Skip actual deployment"
+        required: false
+        type: boolean
+        default: false
+
+    # Secrets — the caller must explicitly pass secrets
+    secrets:
+      DEPLOY_TOKEN:
+        required: true
+      # Or use: secrets: inherit (caller passes ALL its secrets)
+
+    # Outputs — return values to the caller
+    outputs:
+      deploy_url:
+        description: "URL of the deployment"
+        value: ${{ jobs.deploy.outputs.url }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    outputs:
+      url: ${{ steps.deploy.outputs.url }}
+    environment:
+      name: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy
+        id: deploy
+        if: inputs.dry_run == false
+        run: |
+          echo "Deploying ${{ inputs.image_tag }} to ${{ inputs.environment }}"
+          echo "url=https://${{ inputs.environment }}.example.com" >> $GITHUB_OUTPUT
+        env:
+          TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+
+
+# --- CALLING a reusable workflow ---
+# File: .github/workflows/ci.yml
+
+# name: CI
+# on:
+#   push:
+#     branches: [main]
+#
+# jobs:
+#   build:
+#     runs-on: ubuntu-latest
+#     outputs:
+#       tag: ${{ steps.tag.outputs.tag }}
+#     steps:
+#       - id: tag
+#         run: echo "tag=myapp:${{ github.sha }}" >> $GITHUB_OUTPUT
+#
+#   deploy_staging:
+#     needs: build
+#     uses: ./.github/workflows/deploy-reusable.yml  # same repo
+#     with:
+#       environment: staging
+#       image_tag: ${{ needs.build.outputs.tag }}
+#     secrets:
+#       DEPLOY_TOKEN: ${{ secrets.STAGING_DEPLOY_TOKEN }}
+#
+#   deploy_production:
+#     needs: deploy_staging
+#     uses: ./.github/workflows/deploy-reusable.yml
+#     with:
+#       environment: production
+#       image_tag: ${{ needs.build.outputs.tag }}
+#     secrets:
+#       DEPLOY_TOKEN: ${{ secrets.PROD_DEPLOY_TOKEN }}
+#
+#   # Cross-repo call:
+#   # uses: my-org/shared-workflows/.github/workflows/deploy.yml@v1
+
+# Reusable workflow limits:
+#   - Max 4 levels of nesting (A calls B calls C calls D)
+#   - Max 20 reusable workflows per workflow file
+#   - env vars from the caller do NOT propagate (use inputs)
+#   - The called workflow runs in the CALLER's context (same repo permissions)
+
+
+# ============================================================
+# COMPOSITE ACTIONS
+# ============================================================
+# A custom action made of multiple steps (no Docker, no JS — just YAML steps).
+# Lives in a directory with an action.yml file.
+# Lighter than reusable workflows, better for shared step sequences.
+
+# --- DEFINING a composite action ---
+# File: .github/actions/setup-and-build/action.yml
+
+# name: Setup and Build
+# description: Install dependencies and build the project
+#
+# inputs:
+#   node-version:
+#     description: Node.js version
+#     required: false
+#     default: "20"
+#   build-command:
+#     description: Build command to run
+#     required: false
+#     default: "npm run build"
+#
+# outputs:
+#   build-hash:
+#     description: Hash of the build output
+#     value: ${{ steps.hash.outputs.hash }}
+#
+# runs:
+#   using: composite    # <-- this makes it composite
+#   steps:
+#     - name: Setup Node
+#       uses: actions/setup-node@v4
+#       with:
+#         node-version: ${{ inputs.node-version }}
+#         cache: npm
+#
+#     - name: Install
+#       shell: bash      # shell is REQUIRED for run steps in composite
+#       run: npm ci
+#
+#     - name: Build
+#       shell: bash
+#       run: ${{ inputs.build-command }}
+#
+#     - name: Hash output
+#       id: hash
+#       shell: bash
+#       run: echo "hash=$(find dist -type f | sort | xargs sha256sum | sha256sum | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+
+
+# --- USING a composite action ---
+# In any workflow:
+
+# steps:
+#   - uses: actions/checkout@v4
+#   - uses: ./.github/actions/setup-and-build  # local composite action
+#     with:
+#       node-version: "22"
+#     id: build
+#   - run: echo "Build hash: ${{ steps.build.outputs.build-hash }}"
+
+
+# ============================================================
+# REUSABLE WORKFLOW vs COMPOSITE ACTION
+# ============================================================
+#
+# Reusable Workflow:
+#   - Is a full workflow (has its own jobs, runners)
+#   - Called with `uses:` at the JOB level
+#   - Can use services, containers, matrix, environment
+#   - Good for: complete CI/CD pipelines shared across repos
+#   - Caller passes inputs and secrets explicitly
+#
+# Composite Action:
+#   - Is a sequence of steps (runs inside existing job)
+#   - Called with `uses:` at the STEP level
+#   - Cannot define jobs, services, or matrix
+#   - Good for: repeated step sequences within a workflow
+#   - Has access to the job's env and context
+#   - Must specify `shell:` on every `run:` step
+#
+# Rule of thumb:
+#   - Sharing steps → composite action
+#   - Sharing entire jobs/pipelines → reusable workflow

